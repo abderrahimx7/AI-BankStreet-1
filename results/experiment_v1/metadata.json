@@ -1,0 +1,20 @@
+{
+  "ticker": "KBE",
+  "prices_file": "kbe_prices_v1.csv",
+  "prices_sha256": "762a81c2b3b4ba1e638bfe7feea99d0a0c1ebc5ff7cb77c049745f47e5fbe3ae",
+  "features": [
+    "daily_return",
+    "momentum",
+    "volatility_20d"
+  ],
+  "horizon_sessions": 5,
+  "target_threshold": -0.03,
+  "validation_start": "2020-01-01",
+  "test_start": "2023-01-01",
+  "model": "StandardScaler + LogisticRegression",
+  "max_iter": 1000,
+  "train_examples": 2491,
+  "validation_examples": 751,
+  "test_examples": 747,
+  "baseline_probability": 0.12203934162986753
+}
