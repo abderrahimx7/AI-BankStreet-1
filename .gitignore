@@ -4,3 +4,24 @@ __pycache__/
 *.py[cod]
 .env
 .streamlit/secrets.toml
+checkpoints/
+# Generated replay datasets
+data/streaming/
+
+# Local Spark files
+artifacts/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Local model artifacts
+*.joblib
+
+# Generated processed datasets
+data/processed/
+
+# Local Spark error log
+spark_error.log
+
+# Generated Spark Parquet output
+results/spark/

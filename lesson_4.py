@@ -8,6 +8,9 @@ from bankstreet.evaluation import evaluate_model
 import json 
 import hashlib
 
+import joblib
+from importlib.metadata import version 
+
 
 prices_path = (
     Path(__file__).resolve().parent
@@ -114,7 +117,32 @@ metadata = {
     "test_examples": len(test),
     "baseline_probability": float(baseline_probability)
 }
+metadata.update({
+    "train_start": train.index.min().isoformat(),
+    "train_end": train.index.max().isoformat(),
+    "train_label_end": train["label_end_date"].max().isoformat(),
+    "momentum_sessions": 3,
+    "volatility_sessions": 20,
+    "volatility_ddof": 1,
+    "package_versions": {
+        name: version(name)
+        for name in [
+            "scikit-learn", "pandas", "numpy", "scipy", "joblib"
+        ]
+    },
+})
 
+model_path = results_folder / "kbe_model.joblib"
+
+joblib.dump(
+    {
+        "pipeline": model,
+        "metadata": metadata,
+    },
+    model_path,
+)
+
+print("Model saved:", model_path.resolve())
 with (results_folder / "metadata.json").open(
     "w", encoding="utf-8"
 ) as file:

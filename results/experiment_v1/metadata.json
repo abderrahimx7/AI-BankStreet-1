@@ -16,5 +16,18 @@
   "train_examples": 2491,
   "validation_examples": 751,
   "test_examples": 747,
-  "baseline_probability": 0.12203934162986753
+  "baseline_probability": 0.12203934162986753,
+  "train_start": "2010-02-02T00:00:00",
+  "train_end": "2019-12-23T00:00:00",
+  "train_label_end": "2019-12-31T00:00:00",
+  "momentum_sessions": 3,
+  "volatility_sessions": 20,
+  "volatility_ddof": 1,
+  "package_versions": {
+    "scikit-learn": "1.9.1",
+    "pandas": "3.1.0",
+    "numpy": "2.5.4",
+    "scipy": "1.18.1",
+    "joblib": "1.6.0"
+  }
 }
