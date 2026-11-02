@@ -8,3 +8,4 @@ pyspark==4.0.2
 pyarrow==26.0.0
 kafka-python==3.0.12
 joblib==1.6.0
+xgboost==3.4.1

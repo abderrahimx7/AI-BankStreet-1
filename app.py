@@ -509,3 +509,94 @@ else:
             "In this evaluation period, Logistic Regression "
             "underperformed the baseline on all three metrics."
         )
+
+from bankstreet.fraud.dashboard import render_fraud_dashboard
+
+render_fraud_dashboard(Path(__file__).resolve().parent)
+
+from bankstreet.fraud.inference import score_transactions
+import xgboost as xgb
+
+
+st.divider()
+st.header("Score transaction CSV")
+
+st.caption(
+    "ULB-format demo: requires V1–V28 and Amount with the same "
+    "feature transformation as the training dataset. "
+    "Class labels are not used for scoring."
+)
+
+fraud_upload = st.file_uploader(
+    "Choose a transaction CSV",
+    type=["csv"],
+    key="fraud_transaction_upload",
+    max_upload_size=50,
+)
+
+if fraud_upload is not None:
+    try:
+        uploaded_transactions = pd.read_csv(fraud_upload)
+
+        scored_transactions, frozen_threshold = score_transactions(
+            uploaded_transactions,
+            Path(__file__).resolve().parent,
+        )
+
+        left, right = st.columns(2)
+
+        left.metric("Transactions scored", len(scored_transactions))
+        right.metric(
+            "Flagged for review",
+            int(scored_transactions["review_required"].sum()),
+        )
+
+        st.caption(
+            f"Frozen threshold: {frozen_threshold:.9f}. "
+            "No alert does not guarantee a transaction is legitimate."
+        )
+
+        display_results = scored_transactions.copy()
+        display_results["decision"] = (
+            display_results["review_required"].map({
+                True: "Manual review",
+                False: "No alert",
+            })
+        )
+
+
+
+        only_alerts = st.checkbox(
+            "Show flagged transactions only",
+            key="fraud_only_alerts",
+        )
+
+        if only_alerts:
+            display_results = display_results.loc[
+                display_results["review_required"]
+            ]
+
+        st.dataframe(
+            display_results.sort_values(
+                ["model_score", "input_row"],
+                ascending=[False, True],
+            ),
+            hide_index=True,
+        )
+
+
+        st.download_button(
+            "Download scoring results",
+            data=scored_transactions.to_csv(index=False).encode("utf-8"),
+            file_name="fraud_scoring_results.csv",
+            mime="text/csv",
+            key="download_fraud_scores",
+        )
+
+    except (
+        ValueError,
+        FileNotFoundError,
+        UnicodeDecodeError,
+        xgb.core.XGBoostError,
+    ) as error:
+        st.error(f"Could not score the file: {error}")

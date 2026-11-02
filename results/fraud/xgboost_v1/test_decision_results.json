@@ -1,0 +1,14 @@
+{
+  "threshold": 0.080714114,
+  "test_rows": 56962,
+  "actual_frauds": 75,
+  "TP": 59,
+  "FP": 47,
+  "FN": 16,
+  "TN": 56840,
+  "alerts": 106,
+  "precision": 0.5566037735849056,
+  "recall": 0.7866666666666666,
+  "alerts_per_1000": 1.860889715950985,
+  "model_sha256": "b0b61303e1da5b6fd54ba5059d1aa97c49e133808e084ba2410263bea3c7ca0e"
+}

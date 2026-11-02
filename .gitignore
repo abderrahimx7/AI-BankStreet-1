@@ -25,3 +25,11 @@ spark_error.log
 
 # Generated Spark Parquet output
 results/spark/
+
+# Raw fraud dataset
+data/fraud/
+# Raw fraud data and local demo files
+/data/fraud/
+
+# Saved neural network weights
+*.pt

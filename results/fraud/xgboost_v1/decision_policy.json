@@ -1,0 +1,16 @@
+{
+  "model": "xgboost_v1",
+  "model_sha256": "b0b61303e1da5b6fd54ba5059d1aa97c49e133808e084ba2410263bea3c7ca0e",
+  "data_sha256": "76274b691b16a6c49d3f159c883398e03ccd6d1ee12d9d8ee38f4b4b98551a89",
+  "validation_predictions_sha256": "314b3f59f04d2a81fe6bdfaa209a9fafad3f3a2c3f4d52f60b8b0a5ea4a126b1",
+  "selected_on": "validation",
+  "rule": "probability >= threshold",
+  "threshold": 0.080714114,
+  "selection_rule": "largest alert count not exceeding validation budget",
+  "validation_review_budget": 94,
+  "validation_rows": 56963,
+  "validation_alerts": 94,
+  "validation_alerts_per_1000": 1.6501939855695802,
+  "test_start": 145248.0,
+  "action": "manual_review"
+}
