@@ -267,69 +267,84 @@ def render_scoring():
         dependencies = [ROOT / "models" / "fraud" / "xgboost_v1.json",
                         ROOT / "results" / "fraud" / "xgboost_v1" / "decision_policy.json",
                         ROOT / "results" / "fraud" / "xgboost_v1" / "metadata.json"]
-        signature = hashlib.sha256(
-            b"fastapi-v1"
+        import os
+
+        api_url = os.environ.get("FRAUD_API_URL", "").strip().rstrip("/")
+        backend = api_url or "direct-model"
+        signature = hashlib.sha256(      
+            backend.encode("utf-8")
             + raw
             + b"".join(path.read_bytes() for path in dependencies)
         ).hexdigest()
         cached = st.session_state.get("fraud_score_result")
         if cached is None or cached[0] != signature:
-            with st.spinner("Sending transactions to the Fraud API…"):
-                try:
-                    response = requests.post(
-                        "http://127.0.0.1:8000/score-csv",
-                        files={
-                            "file": (
-                                uploaded.name,
-                                raw,
-                                "text/csv",
-                            )
-                        },
-                        timeout=(5, 120),
-                    )
-                except requests.exceptions.Timeout:
-                    st.error(
-                        "The Fraud API took too long to respond."
-                    )
-                    return
-                except requests.exceptions.RequestException:
-                    st.error(
-                        "Could not connect to the Fraud API. "
-                        "Start the API on port 8000."
-                    )
-                    return
+            with st.spinner("Scoring transactions…"):
+                if not api_url:
+                    from io import BytesIO
+                    from bankstreet.fraud.inference import score_transactions
 
-                try:
-                    payload = response.json()
-                except ValueError:
-                    st.error("The Fraud API returned an invalid response.")
-                    return
-
-                if not response.ok:
-                    detail = (
-                        payload.get("detail", "Scoring failed.")
-                        if isinstance(payload, dict)
-                        else "Scoring failed."
+                    scored, threshold = score_transactions(
+                        pd.read_csv(BytesIO(raw)),
+                        ROOT,
                     )
-                    st.error(f"Fraud API: {detail}")
-                    return
 
-                try:
-                    scored = pd.DataFrame(payload["results"])
-                    threshold = float(payload["threshold"])
+                else:
+                    try:
+                        response = requests.post(
+                            f"{api_url}/score-csv",
+                            files={
+                                "file": (
+                                    uploaded.name,
+                                    raw,
+                                    "text/csv",
+                                )
+                            },
+                            timeout=(5, 120),
+                        )
+                    except requests.exceptions.RequestException:
+                        st.error(
+                            "Could not reach the configured Fraud API."
+                        )
+                        return
 
-                    required = {
-                        "input_row",
-                        "Amount",
-                        "model_score",
-                        "review_required",
-                    }
-                    if scored.empty or not required.issubset(scored.columns):
-                        raise ValueError("Missing scoring results.")
-                except (KeyError, TypeError, ValueError):
-                    st.error("The Fraud API returned invalid scoring results.")
-                    return
-            st.session_state["fraud_score_result"] = (signature, scored, threshold)
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        st.error("The Fraud API returned an invalid response.")
+                        return
+
+                    if not response.ok:
+                        detail = (
+                            payload.get("detail", "Scoring failed.")
+                            if isinstance(payload, dict)
+                            else "Scoring failed."
+                        )
+                        st.error(f"Fraud API: {detail}")
+                        return
+
+                    try:
+                        scored = pd.DataFrame(payload["results"])
+                        threshold = float(payload["threshold"])
+
+                        required = {
+                            "input_row",
+                            "Amount",
+                            "model_score",
+                            "review_required",
+                        }
+
+                        if scored.empty or not required.issubset(scored.columns):
+                            raise ValueError("Missing scoring results.")
+
+                    except (KeyError, TypeError, ValueError):
+                        st.error("The Fraud API returned invalid scoring results.")
+                        return
+
+            st.session_state["fraud_score_result"] = (
+                signature,
+                scored,
+                threshold,
+            )
         _, scored, threshold = st.session_state["fraud_score_result"]
         total, alerts = len(scored), int(scored["review_required"].sum())
         metric_row([("Transactions scored", f"{total:,}"), ("Flagged for review", f"{alerts:,}"),
