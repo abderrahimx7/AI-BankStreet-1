@@ -1,602 +1,462 @@
+"""BankStreet AI dashboard. Existing risk and inference functions are reused."""
+import hashlib
+import json
 from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
 from bankstreet.risk import (
     calculate_drawdown,
     calculate_rolling_volatility,
-    summarize_drawdown
+    summarize_drawdown,
 )
-
-
-st.set_page_config(
-    page_title="BankStreet | Risk Analytics",
-    layout="wide"
-)
-
-project_folder = Path(__file__).resolve().parent
-data_folder = project_folder / "data"
-
-st.title("BankStreet — Risk Analytics")
-st.caption("Historical analysis of KBE and SPY")
-
-
-# 1. Load the full price history
-prices = {}
-
-for ticker in ["KBE", "SPY"]:
-    table = pd.read_csv(
-        data_folder / f"{ticker.lower()}_prices_v1.csv",
-        index_col="Date",
-        parse_dates=["Date"]
-    ).sort_index()
-
-    assert table.index.is_unique
-    prices[ticker] = table["Close"]
-
-assert prices["KBE"].index.equals(prices["SPY"].index)
-
-close = pd.DataFrame(prices)
-
-if close.empty or close.isna().any().any():
-    st.error("Prices are empty or contain missing values.")
-    st.stop()
-
-
-# 2. Select the analysis period
-st.sidebar.header("Analysis period")
-
-min_date = close.index.min().date()
-max_date = close.index.max().date()
-
-start_date = st.sidebar.date_input(
-    "Start date",
-    value=pd.Timestamp("2018-03-09").date(),
-    min_value=min_date,
-    max_value=max_date
-)
-
-end_date = st.sidebar.date_input(
-    "End date",
-    value=pd.Timestamp("2021-02-16").date(),
-    min_value=min_date,
-    max_value=max_date
-)
-
-if start_date is None or end_date is None:
-    st.info("Select both dates.")
-    st.stop()
-
-if start_date >= end_date:
-    st.warning("Start date must be before end date.")
-    st.stop()
-
-start = pd.Timestamp(start_date)
-end = pd.Timestamp(end_date)
-
-period_prices = close.loc[start:end]
-
-if len(period_prices) < 2:
-    st.warning("Select a period with at least two trading sessions.")
-    st.stop()
-
-st.write(
-    "Trading sessions used: "
-    f"{period_prices.index.min().date()} → "
-    f"{period_prices.index.max().date()}"
-)
-
-
-# 3. Calculate on full history, then select the period
-drawdowns = calculate_drawdown(close)
-volatility = calculate_rolling_volatility(close, window=20)
-
-period_drawdowns = drawdowns.loc[start:end] * 100
-period_volatility = volatility.loc[start:end] * 100
-
-normalized = period_prices / period_prices.iloc[0] * 100
-
-
-# 4. Build the report for the selected period
-rows = []
-
-for ticker in close.columns:
-    metrics = summarize_drawdown(
-        close[ticker],
-        start=start,
-        end=end
-    )
-
-    metrics["ticker"] = ticker
-
-    metrics["period_return_pct"] = (
-        period_prices[ticker].iloc[-1]
-        / period_prices[ticker].iloc[0]
-        - 1
-    ) * 100
-
-    metrics["max_daily_volatility_pct"] = (
-        period_volatility[ticker].max()
-    )
-
-    rows.append(metrics)
-
-report = pd.DataFrame(rows).set_index("ticker")
-
-report["trough_to_recovery_days"] = pd.to_numeric(
-    report["trough_to_recovery_days"],
-    errors="coerce"
-)
-
-display_report = report[[
-    "drawdown_pct",
-    "period_return_pct",
-    "max_daily_volatility_pct",
-    "trough_to_recovery_days"
-]].rename(columns={
-    "drawdown_pct": "Deepest drawdown (%)",
-    "period_return_pct": "Period return (%)",
-    "max_daily_volatility_pct": "Max daily volatility (%)",
-    "trough_to_recovery_days": "Recovery from trough (days)"
-})
-
-st.dataframe(
-    display_report.style.format(
-        {
-            "Deepest drawdown (%)": "{:.2f}",
-            "Period return (%)": "{:.2f}",
-            "Max daily volatility (%)": "{:.2f}",
-            "Recovery from trough (days)": "{:.0f}"
-        },
-        na_rep="Unavailable"
-    )
-)
-
-st.caption(
-    "Recovery is measured in calendar days from the deepest "
-    "trough in the selected period to the previous peak. "
-    f"The search includes later data through {max_date}. "
-    "Unavailable means recovery was not observed, or there "
-    "was insufficient history to calculate volatility."
-)
-
-
-# 5. Display charts
-st.subheader("Performance from the same starting date")
-st.line_chart(normalized)
-
-st.caption(
-    "Both series start at 100 on the first selected trading "
-    "session. Values use adjusted closing prices."
-)
-
-st.subheader("Historical drawdown (%)")
-st.line_chart(period_drawdowns)
-
-st.caption(
-    "Decline from each asset's previous peak, using all "
-    "available history before and within the selected period."
-)
-
-st.subheader("20-session rolling volatility (%)")
-if period_volatility.dropna(how="all").empty:
-    st.info(
-        "Not enough price history to calculate "
-        "20-session volatility for this period."
-    )
-else:
-    st.line_chart(period_volatility)
-
-st.caption(
-    "Daily return standard deviation over the latest "
-    "20 trading sessions, including upward and downward moves."
-)
-
-
-
-
-
-st.subheader("Download report")
-
-export_report = report.copy()
-export_report["requested_start"] = start.date()
-export_report["requested_end"] = end.date()
-export_report["first_session"] = period_prices.index.min().date()
-export_report["last_session"] = period_prices.index.max().date()
-export_report["volatility_window_sessions"] = 20
-export_report["recovery_search_end"] = max_date
-
-csv_data = export_report.to_csv(
-    sep=";",
-    decimal=",",
-    date_format="%Y-%m-%d",
-    index_label="ticker"
-).encode("utf-8-sig")
-
-st.download_button(
-    label="Download risk report (CSV)",
-    data=csv_data,
-    file_name=f"bankstreet_risk_{start.date()}_{end.date()}.csv",
-    mime="text/csv"
-)
-
-
-
-st.subheader("ML experiment — held-out test")
-
-st.write(
-    "Target: a KBE adjusted-close return of -3% or worse "
-    "after 5 trading sessions."
-)
-
-test_results = pd.read_csv(
-    project_folder
-    / "results"
-    / "experiment_v1"
-    / "test_metrics.csv",
-    index_col="model"
-).rename(
-    index={
-        "Baseline": "Constant baseline",
-        "Logistic": "Logistic regression"
-    },
-    columns={
-        "brier": "Brier score",
-        "roc_auc": "ROC-AUC",
-        "average_precision": "Average precision"
-    }
-)
-
-st.dataframe(
-    test_results.style.format("{:.6f}")
-)
-
-st.write(
-    "The logistic model underperformed the constant baseline "
-    "on the 2023–2025 test period. These results do not "
-    "establish useful predictive performance."
-)
-
-st.caption(
-    "Archived experiment: trained on data before 2020, "
-    "selected using 2020–2022 validation data. "
-    "These fixed test results do not change with "
-    "the sidebar analysis dates."
-)
-
-
-
-st.caption(
-    "When deepest drawdown is zero, recovery is not applicable. "
-    "For a negative drawdown, an unavailable recovery means "
-    "the previous peak was not regained in the available data."
-)
-
-st.subheader("Annual risk — Spark batch results")
-
-annual_path = (
-    project_folder
-    / "results"
-    / "spark"
-    / "annual_risk_v1"
-)
-
-annual_report = pd.read_parquet(annual_path)
-
-annual_report["deepest_drawdown_pct"] = (
-    annual_report["deepest_drawdown"] * 100
-)
-
-annual_report["max_daily_volatility_pct"] = (
-    annual_report["max_daily_volatility"] * 100
-)
-
-st.dataframe(
-    annual_report[[
-        "ticker",
-        "year",
-        "sessions",
-        "deepest_drawdown_pct",
-        "max_daily_volatility_pct"
-    ]]
-    .sort_values(["year", "ticker"])
-    .style.format({
-        "year": "{:.0f}",
-        "sessions": "{:.0f}",
-        "deepest_drawdown_pct": "{:.2f}",
-        "max_daily_volatility_pct": "{:.2f}"
-    })
-)
-
-st.caption(
-    "Full-year results generated by the Spark batch pipeline. "
-    "Independent of the sidebar dates. Drawdown uses historical "
-    "peaks, including those before the year."
-)
-
-
-
-
-from pathlib import Path
-import pandas as pd
-import streamlit as st
-
-
-st.divider()
-st.header("Historical Replay — Market Risk")
-st.caption(
-    "Historical prices replayed through Kafka and Spark. "
-    "Results reflect the last completed processing run."
-)
-
-replay_path = (
-    Path(__file__).resolve().parent
-    / "results"
-    / "replay"
-    / "market_risk.csv"
-)
-
-if not replay_path.exists():
-    st.info("Run lesson_17.py to generate the replay report.")
-else:
-    st.button("Refresh replay report", key="refresh_replay")
-
-    replay_data = pd.read_csv(replay_path, parse_dates=["date"])
-
-    replay_ticker = st.selectbox(
-        "Asset",
-        sorted(replay_data["ticker"].unique()),
-        key="replay_asset",
-    )
-
-    selected = (
-        replay_data.loc[replay_data["ticker"] == replay_ticker]
-        .sort_values("date")
-        .copy()
-    )
-
-    latest = selected.iloc[-1]
-
-    st.caption(
-        f"{selected['date'].min():%Y-%m-%d} → "
-        f"{selected['date'].max():%Y-%m-%d}"
-    )
-
-    left, right = st.columns(2)
-
-    latest_return = latest["daily_return"]
-    latest_volatility = latest["volatility_20d"]
-
-    left.metric(
-        "Latest session return",
-        f"{latest_return * 100:.2f}%"
-        if pd.notna(latest_return) else "Not available",
-    )
-    right.metric(
-        "Daily volatility · 20-session window",
-        f"{latest_volatility * 100:.2f}%"
-        if pd.notna(latest_volatility) else "Not enough history",
-    )
-
-    selected["volatility_20d_pct"] = (
-        selected["volatility_20d"] * 100
-    )
-
-    st.line_chart(
-        selected,
-        x="date",
-        y="volatility_20d_pct",
-        y_label="Daily volatility (%)",
-    )
-
-    with st.expander("View replay data"):
-        st.dataframe(selected, hide_index=True)
-
-st.divider()
-st.header("KBE — Experimental ML Probability")
-st.caption(
-    "Historical replay of the previously evaluated 2023 test period. "
-    "The saved model was trained before 2020. "
-    "It underperformed the baseline on the held-out test set."
-)
-
-prediction_path = (
-    Path(__file__).resolve().parent
-    / "results"
-    / "replay"
-    / "kbe_predictions.csv"
-)
-
-if not prediction_path.exists():
-    st.info("Run the replay pipeline to generate predictions.")
-else:
-    st.button("Refresh ML report", key="refresh_ml_report")
-
-    predictions = pd.read_csv(
-        prediction_path,
-        parse_dates=["date"],
-    ).sort_values("date")
-
-    if predictions.empty:
-        st.info("No predictions available.")
-    else:
-        latest_prediction = predictions.iloc[-1]
-
-        st.caption(
-            f"Latest replay session: "
-            f"{latest_prediction['date']:%Y-%m-%d}"
-        )
-
-        st.metric(
-            "Model probability · return ≤ −3% after 5 sessions",
-            f"{latest_prediction['p_target_1'] * 100:.2f}%",
-        )
-
-        predictions["probability_pct"] = (
-            predictions["p_target_1"] * 100
-        )
-
-        st.line_chart(
-            predictions,
-            x="date",
-            y="probability_pct",
-            y_label="Model probability (%)",
-        )
-
-
-st.divider()
-st.subheader("Model evaluation — 2023")
-
-evaluation_folder = (
-    Path(__file__).resolve().parent / "results" / "replay"
-)
-
-metrics_path = evaluation_folder / "metrics_2023.csv"
-evaluated_path = (
-    evaluation_folder / "evaluated_predictions_2023.csv"
-)
-
-if not metrics_path.exists() or not evaluated_path.exists():
-    st.info("Run lesson_19.py to generate the evaluation report.")
-else:
-    evaluation_metrics = pd.read_csv(
-        metrics_path,
-        index_col="model",
-    )
-
-    evaluated_predictions = pd.read_csv(
-        evaluated_path,
-        parse_dates=["date", "label_end_date"],
-    )
-
-    st.caption(
-        "Previously evaluated test period: prediction dates and "
-        "five-session outcomes both fall within 2023. "
-        "The baseline uses the positive rate from training."
-    )
-
-    count_col, rate_col = st.columns(2)
-
-    count_col.metric(
-        "Evaluated sessions",
-        len(evaluated_predictions),
-    )
-
-    rate_col.metric(
-        "Observed event rate",
-        f"{evaluated_predictions['target'].mean() * 100:.2f}%",
-    )
-
-    st.dataframe(
-        evaluation_metrics.style.format("{:.6f}"),
-    )
-
-    st.caption(
-        "Brier: lower is better. "
-        "ROC AUC and Average Precision: higher is better."
-    )
-
-    baseline = evaluation_metrics.loc["Baseline"]
-    logistic = evaluation_metrics.loc["Logistic"]
-
-    if (
-        logistic["brier"] > baseline["brier"]
-        and logistic["roc_auc"] < baseline["roc_auc"]
-        and logistic["average_precision"]
-        < baseline["average_precision"]
-    ):
-        st.warning(
-            "In this evaluation period, Logistic Regression "
-            "underperformed the baseline on all three metrics."
-        )
-
-from bankstreet.fraud.dashboard import render_fraud_dashboard
-
-render_fraud_dashboard(Path(__file__).resolve().parent)
-
-from bankstreet.fraud.inference import score_transactions
-import xgboost as xgb
-
-
-st.divider()
-st.header("Score transaction CSV")
-
-st.caption(
-    "ULB-format demo: requires V1–V28 and Amount with the same "
-    "feature transformation as the training dataset. "
-    "Class labels are not used for scoring."
-)
-
-fraud_upload = st.file_uploader(
-    "Choose a transaction CSV",
-    type=["csv"],
-    key="fraud_transaction_upload",
-    max_upload_size=50,
-)
-
-if fraud_upload is not None:
+from bankstreet.ui import apply_theme, callout, footer, line_chart, metric_row, page_header, section
+from bankstreet.fraud.dashboard import load_fraud_summary, render_fraud_dashboard
+
+
+st.set_page_config(page_title="BankStreet AI | Analytics Workspace", page_icon="B", layout="wide")
+apply_theme(dark=bool(st.session_state.get("night_mode", False)))
+ROOT = Path(__file__).resolve().parent
+
+
+def read_prices():
+    prices = {}
+    for ticker in ["KBE", "SPY"]:
+        table = pd.read_csv(
+            ROOT / "data" / f"{ticker.lower()}_prices_v1.csv",
+            index_col="Date", parse_dates=["Date"],
+        ).sort_index()
+        if not table.index.is_unique:
+            raise ValueError(f"{ticker}: price dates must be unique.")
+        prices[ticker] = table["Close"]
+    if not prices["KBE"].index.equals(prices["SPY"].index):
+        raise ValueError("KBE and SPY dates are not aligned.")
+    close = pd.DataFrame(prices)
+    if close.empty or close.isna().any().any():
+        raise ValueError("Prices are empty or contain missing values.")
+    return close
+
+
+def go_to(page):
+    st.session_state["workspace_page"] = page
+
+
+with st.sidebar:
+    st.markdown('<div class="bs-brand"><div class="bs-monogram">B</div><div>'
+                '<strong>BankStreet<span style="color:#92C9B0"> AI</span></strong>'
+                '<small>ANALYTICS WORKSPACE</small></div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="bs-navlabel">WORKSPACE</div>', unsafe_allow_html=True)
+    page = st.radio("Workspace navigation", ["Overview", "Market Risk", "Fraud Detection", "Score CSV", "Experiments"],
+                    key="workspace_page", label_visibility="collapsed")
+    st.markdown("---")
+    st.toggle("Night mode", key="night_mode", help="Switch between light and dark appearance for this session.")
+    st.markdown("---")
+    st.caption("DATA MODE")
+    st.markdown("**Historical research**")
+    st.caption("Local price snapshots and an anonymized transaction benchmark.")
+    st.button("Refresh saved reports", key="refresh_all_reports", width="stretch")
+    st.markdown('<div class="bs-side-note"><b>Built for understanding.</b><br>'
+                'Measured risk. Verified calculations.<br>Human-reviewed fraud alerts.</div>', unsafe_allow_html=True)
+
+
+def render_overview():
+    page_header("WORKSPACE / OVERVIEW", "A clearer view of financial risk.",
+                "Explore market history, inspect fraud signals, and understand the evidence behind every model.",
+                "RESEARCH WORKSPACE")
+    close = None
+    summary = None
     try:
-        uploaded_transactions = pd.read_csv(fraud_upload)
+        close = read_prices()
+    except (FileNotFoundError, ValueError, KeyError) as error:
+        st.info(f"Market snapshots unavailable: {error}")
+    try:
+        summary, _ = load_fraud_summary(ROOT)
+    except (FileNotFoundError, ValueError, KeyError, json.JSONDecodeError) as error:
+        st.info(f"Fraud evaluation unavailable: {error}")
 
-        scored_transactions, frozen_threshold = score_transactions(
-            uploaded_transactions,
-            Path(__file__).resolve().parent,
-        )
+    metric_row([
+        ("Market assets", "KBE / SPY" if close is not None else "Unavailable"),
+        ("Price sessions per asset", f"{len(close):,}" if close is not None else "—"),
+        ("Fraud test recall", f"{summary['recall']:.2%}" if summary else "—"),
+        ("Test alerts per 1,000", f"{summary['alerts_per_1000']:.2f}" if summary else "—"),
+    ])
 
-        left, right = st.columns(2)
+    primary, secondary = st.columns([2.2, 1], gap="large")
+    with primary:
+        section("Market pulse", "ADJUSTED CLOSE · INDEXED TO 100")
+        with st.container(border=True):
+            if close is not None:
+                recent = close.tail(252)
+                line_chart(recent / recent.iloc[0] * 100, "Indexed value", height=310)
+                st.caption(f"{recent.index.min():%d %b %Y} — {recent.index.max():%d %b %Y} · "
+                           f"Latest {len(recent)} available trading sessions. Historical prices.")
+            else:
+                st.info("Add the KBE and SPY snapshots to display this chart.")
+    with secondary:
+        section("Review desk", "FROZEN TEST POLICY")
+        with st.container(border=True):
+            if summary:
+                st.metric("Fraud cases detected", f"{summary['TP']} / {summary['actual_frauds']}")
+                st.markdown(f"**{summary['alerts']}** transactions flagged for review  \n"
+                            f"**{summary['FP']}** false alerts · **{summary['FN']}** fraud cases missed")
+                st.caption("Chronological ULB test split. The model and threshold were selected on validation.")
+            else:
+                st.info("Saved evaluation reports are not available.")
+            st.button("Open fraud evaluation →", on_click=go_to, args=("Fraud Detection",), width="stretch")
 
-        left.metric("Transactions scored", len(scored_transactions))
-        right.metric(
-            "Flagged for review",
-            int(scored_transactions["review_required"].sum()),
-        )
-
-        st.caption(
-            f"Frozen threshold: {frozen_threshold:.9f}. "
-            "No alert does not guarantee a transaction is legitimate."
-        )
-
-        display_results = scored_transactions.copy()
-        display_results["decision"] = (
-            display_results["review_required"].map({
-                True: "Manual review",
-                False: "No alert",
-            })
-        )
+    section("Your research workspace", "TWO DOMAINS · ONE WORKSPACE")
+    left, right = st.columns(2, gap="large")
+    with left, st.container(border=True):
+        st.markdown("### Market risk")
+        st.write("Compare banking-sector and broad-market performance, drawdowns, and daily volatility across history.")
+        st.caption("KBE · SPY · Kafka / Spark historical replay")
+        st.button("Explore market history →", on_click=go_to, args=("Market Risk",))
+    with right, st.container(border=True):
+        st.markdown("### Transaction screening")
+        st.write("Upload transactions in the benchmark feature format and inspect the review queue from the saved XGBoost model.")
+        st.caption("ULB FORMAT · FIXED THRESHOLD · MANUAL REVIEW")
+        st.button("Score a CSV file →", on_click=go_to, args=("Score CSV",))
+    callout("Different evidence, different conclusions: the fraud benchmark is promising; the KBE market prediction model did not outperform its full-test baseline. See Experiments for both results.")
 
 
+def render_selected_market(close):
+    minimum, maximum = close.index.min().date(), close.index.max().date()
+    clamp = lambda value: min(max(pd.Timestamp(value).date(), minimum), maximum)
+    with st.container(border=True):
+        a, b, c = st.columns([1, 1, 1.35], vertical_alignment="bottom")
+        start_date = a.date_input("Start date", value=clamp("2018-03-09"), min_value=minimum, max_value=maximum, key="market_start")
+        end_date = b.date_input("End date", value=clamp("2021-02-16"), min_value=minimum, max_value=maximum, key="market_end")
+        c.caption("Both assets use the same period. Calculations include earlier history where required.")
+    if start_date is None or end_date is None:
+        st.info("Select both dates.")
+        return
+    if start_date >= end_date:
+        st.warning("Start date must be before end date.")
+        return
+    start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
+    period_prices = close.loc[start:end]
+    if len(period_prices) < 2:
+        st.warning("Select at least two trading sessions.")
+        return
 
-        only_alerts = st.checkbox(
-            "Show flagged transactions only",
-            key="fraud_only_alerts",
-        )
+    # Same calculations and slicing semantics as the supplied app.py.
+    drawdowns = calculate_drawdown(close)
+    volatility = calculate_rolling_volatility(close, window=20)
+    period_drawdowns = drawdowns.loc[start:end] * 100
+    period_volatility = volatility.loc[start:end] * 100
+    normalized = period_prices / period_prices.iloc[0] * 100
+    rows = []
+    for ticker in close.columns:
+        metrics = summarize_drawdown(close[ticker], start=start, end=end)
+        metrics["ticker"] = ticker
+        metrics["period_return_pct"] = (period_prices[ticker].iloc[-1] / period_prices[ticker].iloc[0] - 1) * 100
+        metrics["max_daily_volatility_pct"] = period_volatility[ticker].max()
+        rows.append(metrics)
+    report = pd.DataFrame(rows).set_index("ticker")
+    report["trough_to_recovery_days"] = pd.to_numeric(report["trough_to_recovery_days"], errors="coerce")
+    metric_row([
+        ("KBE · period return", f"{report.loc['KBE', 'period_return_pct']:+.2f}%"),
+        ("SPY · period return", f"{report.loc['SPY', 'period_return_pct']:+.2f}%"),
+        ("KBE · deepest drawdown", f"{report.loc['KBE', 'drawdown_pct']:.2f}%"),
+        ("SPY · deepest drawdown", f"{report.loc['SPY', 'drawdown_pct']:.2f}%"),
+    ])
+    section("Performance comparison", "COMMON START = 100")
+    with st.container(border=True):
+        line_chart(normalized, "Indexed value", height=330)
+        st.caption(f"{period_prices.index.min():%d %b %Y} — {period_prices.index.max():%d %b %Y} · Adjusted closing prices.")
+    left, right = st.columns(2, gap="large")
+    with left:
+        section("Drawdown", "HISTORICAL PEAKS")
+        with st.container(border=True):
+            line_chart(period_drawdowns, "Drawdown (%)", height=240)
+    with right:
+        section("Rolling daily volatility", "20 RETURNS · NOT ANNUALIZED")
+        with st.container(border=True):
+            line_chart(period_volatility, "Daily volatility (%)", height=240)
+    section("Period risk report")
+    display = report[["drawdown_pct", "period_return_pct", "max_daily_volatility_pct", "trough_to_recovery_days"]].rename(columns={
+        "drawdown_pct": "Deepest drawdown (%)", "period_return_pct": "Period return (%)",
+        "max_daily_volatility_pct": "Max daily volatility (%)", "trough_to_recovery_days": "Recovery from trough (days)",
+    })
+    st.dataframe(display.style.format({
+        "Deepest drawdown (%)": "{:.2f}", "Period return (%)": "{:.2f}",
+        "Max daily volatility (%)": "{:.2f}", "Recovery from trough (days)": "{:.0f}",
+    }, na_rep="Unavailable"), width="stretch")
+    st.caption(f"Drawdown uses full-history peaks. Recovery is measured in calendar days; the search can extend through {maximum}. "
+               "A zero drawdown has no applicable recovery. Unavailable recovery means the previous peak was not regained; volatility can be unavailable with insufficient history.")
+    export = report.copy()
+    export["requested_start"], export["requested_end"] = start.date(), end.date()
+    export["first_session"], export["last_session"] = period_prices.index.min().date(), period_prices.index.max().date()
+    export["volatility_window_sessions"], export["recovery_search_end"] = 20, maximum
+    st.download_button("Download period report", data=export.to_csv(sep=";", decimal=",", date_format="%Y-%m-%d", index_label="ticker").encode("utf-8-sig"),
+                       file_name=f"bankstreet_risk_{start.date()}_{end.date()}.csv", mime="text/csv", key="market_report_download")
 
+
+def render_replay():
+    path = ROOT / "results" / "replay" / "market_risk.csv"
+    if not path.exists():
+        st.info("Replay report unavailable. Run the replay pipeline to generate it.")
+        return
+    data = pd.read_csv(path, parse_dates=["date"])
+    if data.empty:
+        st.info("The replay report contains no observations.")
+        return
+    asset = st.selectbox("Replay asset", sorted(data["ticker"].unique()), key="replay_asset")
+    selected = data.loc[data["ticker"] == asset].sort_values("date").copy()
+    latest = selected.iloc[-1]
+    metric_row([
+        ("Latest replay session", f"{latest['date']:%d %b %Y}"),
+        ("Session return", f"{latest['daily_return'] * 100:+.2f}%" if pd.notna(latest["daily_return"]) else "N/A"),
+        ("Daily volatility · 20 sessions", f"{latest['volatility_20d'] * 100:.2f}%" if pd.notna(latest["volatility_20d"]) else "N/A"),
+    ])
+    section("Historical replay volatility", "LATEST COMPLETED PROCESSING RUN")
+    with st.container(border=True):
+        line_chart((selected.set_index("date")[["volatility_20d"]] * 100).rename(columns={"volatility_20d": asset}),
+                   "Daily volatility (%)", area=True)
+    st.caption(f"{selected['date'].min():%Y-%m-%d} — {selected['date'].max():%Y-%m-%d}. Historical replay, not live market prices.")
+    with st.expander("Inspect replay observations"):
+        st.dataframe(selected, hide_index=True, width="stretch")
+
+
+def render_annual():
+    path = ROOT / "results" / "spark" / "annual_risk_v1"
+    if not path.exists():
+        st.info("Annual Spark report is not available. Generate it with the existing batch workflow.")
+        return
+    annual = pd.read_parquet(path)
+    annual["deepest_drawdown_pct"] = annual["deepest_drawdown"] * 100
+    annual["max_daily_volatility_pct"] = annual["max_daily_volatility"] * 100
+    st.dataframe(annual[["ticker", "year", "sessions", "deepest_drawdown_pct", "max_daily_volatility_pct"]]
+                 .sort_values(["year", "ticker"]).style.format({"year": "{:.0f}", "sessions": "{:.0f}",
+                   "deepest_drawdown_pct": "{:.2f}", "max_daily_volatility_pct": "{:.2f}"}), width="stretch", hide_index=True)
+    st.caption("Full-year Spark batch results. Independent of the selected analysis period. Historical peaks may precede the year.")
+
+
+def render_market():
+    page_header("WORKSPACE / MARKET RISK", "Understand the path, not just the return.",
+                "Banking-sector and broad-market history, with consistent drawdown and volatility calculations.")
+    selected, replay, annual = st.tabs(["Period analysis", "Historical replay", "Annual Spark report"])
+    with selected:
+        try:
+            render_selected_market(read_prices())
+        except (FileNotFoundError, ValueError, KeyError) as error:
+            st.error(f"Cannot load the market analysis: {error}")
+    with replay:
+        render_replay()
+    with annual:
+        render_annual()
+
+
+def render_scoring():
+    page_header("WORKSPACE / TRANSACTION SCREENING", "From transactions to a review queue.",
+                "Score a compatible CSV with the saved XGBoost model and the frozen validation-selected threshold.", "SAVED MODEL · INFERENCE")
+    with st.container(border=True):
+        st.markdown("### Upload transaction data")
+        st.caption("Required: V1–V28 and Amount in the ULB feature representation. Class labels and extra columns are ignored. Maximum 50 MB.")
+        uploaded = st.file_uploader("Choose a transaction CSV", type=["csv"], key="fraud_transaction_upload", max_upload_size=50)
+    if uploaded is None:
+        callout("Use data/fraud/demo_transactions.csv to try the interface. Arbitrary bank exports are not supported: the model expects the benchmark's pre-transformed PCA features.")
+        st.caption("An alert requests manual review. No alert does not guarantee that a transaction is legitimate.")
+        return
+    import xgboost as xgb
+    import requests
+    try:
+        raw = uploaded.getvalue()
+        # Invalidate saved UI results whenever the file, model, policy, or feature metadata changes.
+        dependencies = [ROOT / "models" / "fraud" / "xgboost_v1.json",
+                        ROOT / "results" / "fraud" / "xgboost_v1" / "decision_policy.json",
+                        ROOT / "results" / "fraud" / "xgboost_v1" / "metadata.json"]
+        signature = hashlib.sha256(
+            b"fastapi-v1"
+            + raw
+            + b"".join(path.read_bytes() for path in dependencies)
+        ).hexdigest()
+        cached = st.session_state.get("fraud_score_result")
+        if cached is None or cached[0] != signature:
+            with st.spinner("Sending transactions to the Fraud API…"):
+                try:
+                    response = requests.post(
+                        "http://127.0.0.1:8000/score-csv",
+                        files={
+                            "file": (
+                                uploaded.name,
+                                raw,
+                                "text/csv",
+                            )
+                        },
+                        timeout=(5, 120),
+                    )
+                except requests.exceptions.Timeout:
+                    st.error(
+                        "The Fraud API took too long to respond."
+                    )
+                    return
+                except requests.exceptions.RequestException:
+                    st.error(
+                        "Could not connect to the Fraud API. "
+                        "Start the API on port 8000."
+                    )
+                    return
+
+                try:
+                    payload = response.json()
+                except ValueError:
+                    st.error("The Fraud API returned an invalid response.")
+                    return
+
+                if not response.ok:
+                    detail = (
+                        payload.get("detail", "Scoring failed.")
+                        if isinstance(payload, dict)
+                        else "Scoring failed."
+                    )
+                    st.error(f"Fraud API: {detail}")
+                    return
+
+                try:
+                    scored = pd.DataFrame(payload["results"])
+                    threshold = float(payload["threshold"])
+
+                    required = {
+                        "input_row",
+                        "Amount",
+                        "model_score",
+                        "review_required",
+                    }
+                    if scored.empty or not required.issubset(scored.columns):
+                        raise ValueError("Missing scoring results.")
+                except (KeyError, TypeError, ValueError):
+                    st.error("The Fraud API returned invalid scoring results.")
+                    return
+            st.session_state["fraud_score_result"] = (signature, scored, threshold)
+        _, scored, threshold = st.session_state["fraud_score_result"]
+        total, alerts = len(scored), int(scored["review_required"].sum())
+        metric_row([("Transactions scored", f"{total:,}"), ("Flagged for review", f"{alerts:,}"),
+                    ("Share flagged", f"{alerts / total:.2%}" if total else "N/A")])
+        section("Screening results", f"FROZEN THRESHOLD · {threshold:.9f}")
+        a, b = st.columns([2, 1], vertical_alignment="center")
+        only_alerts = a.checkbox("Show flagged transactions only", key="fraud_only_alerts")
+        b.download_button("Download all scoring results", scored.to_csv(index=False).encode("utf-8"),
+                          "fraud_scoring_results.csv", "text/csv", key="download_fraud_scores", width="stretch")
+        view = scored.copy()
+        view["decision"] = view["review_required"].map({True: "Manual review", False: "No alert"})
         if only_alerts:
-            display_results = display_results.loc[
-                display_results["review_required"]
-            ]
-
-        st.dataframe(
-            display_results.sort_values(
-                ["model_score", "input_row"],
-                ascending=[False, True],
-            ),
-            hide_index=True,
-        )
-
-
-        st.download_button(
-            "Download scoring results",
-            data=scored_transactions.to_csv(index=False).encode("utf-8"),
-            file_name="fraud_scoring_results.csv",
-            mime="text/csv",
-            key="download_fraud_scores",
-        )
-
-    except (
-        ValueError,
-        FileNotFoundError,
-        UnicodeDecodeError,
-        xgb.core.XGBoostError,
-    ) as error:
+            view = view.loc[view["review_required"]]
+        view = view.sort_values(["model_score", "input_row"], ascending=[False, True])
+        st.dataframe(view[["input_row", "Amount", "model_score", "decision"]],
+            hide_index=True, width="stretch", column_config={
+                "input_row": st.column_config.NumberColumn("Input row", format="%d"),
+                "Amount": st.column_config.NumberColumn("Amount", format="%.2f"),
+                "model_score": st.column_config.ProgressColumn("Model score", min_value=0, max_value=1, format="%.4f"),
+                "decision": st.column_config.TextColumn("Decision"),
+            })
+        st.caption(f"Showing {len(view):,} of {total:,} input rows. Scores are model estimates, not confirmed outcomes. The download includes all rows, regardless of the display filter.")
+        callout("The threshold is fixed. Review alerts may vary between files; do not change the threshold using the outcomes of a new test sample.")
+    except (ValueError, FileNotFoundError, UnicodeDecodeError, xgb.core.XGBoostError) as error:
         st.error(f"Could not score the file: {error}")
+
+
+def show_metrics(path, index="model"):
+    if not path.exists():
+        st.info(f"Saved report not available: {path.relative_to(ROOT)}")
+        return None
+    table = pd.read_csv(path, index_col=index)
+    st.dataframe(table.style.format("{:.6f}"), width="stretch")
+    return table
+
+
+def render_experiments():
+    page_header("WORKSPACE / RESEARCH & EVALUATION", "The evidence behind the models.",
+                "Keep model quality separate from pipeline correctness. Compare saved experiments and their limitations.", "REPORTED RESULTS")
+    market, fraud, validation = st.tabs(["KBE market model", "Fraud candidates", "Verification & scope"])
+    with market:
+        callout("The KBE Logistic Regression model underperformed its constant baseline on the full held-out test. Its probabilities remain an experimental demonstration.")
+        section("Original experiment", "2023–2025 HELD-OUT TEST")
+        show_metrics(ROOT / "results" / "experiment_v1" / "test_metrics.csv")
+        st.caption("Target: KBE closing return ≤ −3% after five trading sessions, not any dip during the window. Trained before 2020; validation 2020–2022. These reports do not depend on market date filters.")
+        section("2023 replay probabilities", "PREVIOUSLY EVALUATED TEST PERIOD")
+        path = ROOT / "results" / "replay" / "kbe_predictions.csv"
+        if path.exists():
+            data = pd.read_csv(path, parse_dates=["date"]).sort_values("date")
+            if not data.empty:
+                latest = data.iloc[-1]
+                metric_row([("Latest replay session", f"{latest['date']:%d %b %Y}"),
+                            ("Estimated event probability", f"{latest['p_target_1']:.2%}")])
+                with st.container(border=True):
+                    line_chart((data.set_index("date")[["p_target_1"]] * 100).rename(columns={"p_target_1": "KBE model"}), "Probability (%)", height=240)
+        else:
+            st.info("Run the replay pipeline to generate KBE predictions.")
+        section("2023 replay evaluation")
+        evaluation = ROOT / "results" / "replay"
+        outcomes_path = evaluation / "evaluated_predictions_2023.csv"
+        if outcomes_path.exists():
+            outcomes = pd.read_csv(outcomes_path)
+            st.caption(f"{len(outcomes):,} evaluated sessions · observed event rate {outcomes['target'].mean():.2%}. Five-session outcomes must end within 2023.")
+        table = show_metrics(evaluation / "metrics_2023.csv")
+        if table is not None and {"Baseline", "Logistic"}.issubset(table.index):
+            baseline, logistic = table.loc["Baseline"], table.loc["Logistic"]
+            if (logistic["brier"] > baseline["brier"] and logistic["roc_auc"] < baseline["roc_auc"]
+                    and logistic["average_precision"] < baseline["average_precision"]):
+                st.warning("KBE market model — 2023: Logistic Regression underperformed the baseline on all three metrics.")
+        with st.expander("Validation diagnostics and alternative models"):
+            for title, relative in [
+                ("Fixed-model annual validation", "diagnostics_v1/validation_by_year.csv"),
+                ("Volatility-only comparison", "volatility_only_experiment/validation_comparison.csv"),
+                ("Paired Brier block bootstrap", "volatility_only_experiment/brier_gain_bootstrap.csv"),
+                ("Annual retraining", "annual_retraining_experiment/validation_comparison.csv"),
+            ]:
+                path = ROOT / "results" / relative
+                if path.exists():
+                    st.markdown(f"**{title}**")
+                    st.dataframe(pd.read_csv(path), hide_index=True, width="stretch")
+    with fraud:
+        section("Candidate comparison", "CHRONOLOGICAL VALIDATION ONLY")
+        parts = []
+        for name, directory in [("Logistic", "logistic_v1"), ("XGBoost", "xgboost_v1"), ("MLP", "mlp_v1")]:
+            path = ROOT / "results" / "fraud" / directory / "validation_metrics.csv"
+            if path.exists():
+                table = pd.read_csv(path, index_col="model")
+                if name in table.index:
+                    parts.append(table.loc[[name]])
+        if parts:
+            st.dataframe(pd.concat(parts).style.format("{:.6f}"), width="stretch")
+        else:
+            st.info("Candidate evaluation reports are not available.")
+        st.caption("XGBoost and MLP were trained on the RTX 3070. MLP: 29 → 64 → 32 → 1, 20 fixed epochs, one seed. Model size and GPU use alone do not establish better performance.")
+        section("Equal review budget", "94 VALIDATION TRANSACTIONS")
+        path = ROOT / "results" / "fraud" / "review_budget_comparison" / "validation_top94_comparison.csv"
+        if path.exists():
+            st.dataframe(pd.read_csv(path), hide_index=True, width="stretch")
+        section("MLP training history")
+        path = ROOT / "results" / "fraud" / "mlp_v1" / "training_history.csv"
+        if path.exists():
+            history = pd.read_csv(path)
+            line_chart(history.set_index("epoch")[["train_loss", "validation_loss"]], "Binary cross-entropy", numeric_index=True)
+        else:
+            st.info("MLP history is not available.")
+        callout("The fraud model and threshold were selected using validation. Test outcomes are reported on the Fraud Detection page; they were not used to choose the threshold.")
+    with validation:
+        left, right = st.columns(2, gap="large")
+        with left, st.container(border=True):
+            st.markdown("### Verified calculation paths")
+            st.markdown("- Drawdown and recovery edge cases.\n- Spark features compared with pandas.\n- CSV inference compared with saved test predictions.\n- Missing features, missing values, and negative amounts rejected.")
+            st.caption("These checks were run during development. This page lists their scope; it does not run them or claim a new test pass.")
+        with right, st.container(border=True):
+            st.markdown("### Practical limits")
+            st.markdown("- Fraud benchmark covers two days.\n- Precomputed PCA representation is required.\n- No live bank integration or automatic blocking.\n- Market replay is historical; downstream reports are batch generated.\n- Credit-default modeling is not implemented.")
+        st.caption("Brier: lower is better. ROC AUC and Average Precision: higher is better. Average Precision is not recall, precision at a chosen threshold, or classification accuracy.")
+
+
+if page == "Overview":
+    render_overview()
+elif page == "Market Risk":
+    render_market()
+elif page == "Fraud Detection":
+    render_fraud_dashboard(ROOT)
+elif page == "Score CSV":
+    render_scoring()
+else:
+    render_experiments()
+
+footer()
